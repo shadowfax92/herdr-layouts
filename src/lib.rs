@@ -1,5 +1,8 @@
 mod context;
-mod herdr;
+pub mod grid;
+pub mod grid_ui;
+pub mod herdr;
+pub mod install;
 mod layout;
 mod socket;
 

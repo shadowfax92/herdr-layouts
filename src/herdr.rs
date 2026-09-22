@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -20,11 +21,18 @@ struct Pane {
     pane_id: String,
 }
 
+/// CLI boundary shared by shortcuts and grid operations; every mutation uses
+/// explicit pane IDs so popup focus cannot retarget a running operation.
+#[derive(Clone, Debug)]
 pub struct Herdr {
     bin: OsString,
 }
 
 impl Herdr {
+    pub fn new(bin: impl Into<OsString>) -> Self {
+        Self { bin: bin.into() }
+    }
+
     pub fn from_env() -> Self {
         Self {
             bin: std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| OsString::from("herdr")),
@@ -51,7 +59,15 @@ impl Herdr {
         Ok(())
     }
 
-    fn run(&self, args: &[OsString]) -> Result<String> {
+    pub fn json<T: DeserializeOwned>(&self, args: &[&str]) -> Result<T> {
+        serde_json::from_str(&self.output(args)?).context("invalid Herdr JSON response")
+    }
+
+    pub fn output(&self, args: &[&str]) -> Result<String> {
+        self.run(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    pub fn run(&self, args: &[OsString]) -> Result<String> {
         let output = Command::new(&self.bin)
             .args(args)
             .output()

@@ -1,9 +1,9 @@
 id = "shadowfax.layouts"
 name = "Herdr Layouts"
-version = "0.1.0"
-description = "Tmux-style narrow splits and focused-pane equalization."
-min_herdr_version = "0.7.5"
-platforms = ["macos"]
+version = "0.2.0"
+description = "Create exact pane grids, narrow splits, and focused-pane equalization."
+min_herdr_version = "0.9.0"
+platforms = ["macos", "linux"]
 
 [[build]]
 command = ["cargo", "build", "--release", "--locked"]
@@ -28,3 +28,24 @@ title = "Spread nearby panes evenly"
 description = "Equalize the focused pane and adjacent panes in the same direction."
 contexts = ["pane"]
 command = ["./target/release/herdr-layouts", "equalize"]
+
+[[actions]]
+id = "grid"
+title = "Create layout…"
+description = "Keep existing panes and add empty shells to a columns x rows grid."
+contexts = ["pane"]
+command = ["./target/release/herdr-layouts", "open-grid"]
+
+[[actions]]
+id = "install-menu"
+title = "Add Create layout to Herdr Menu"
+description = "Back up the menu config and add the grid dialog on g."
+command = ["./target/release/herdr-layouts", "install-menu"]
+
+[[panes]]
+id = "grid"
+title = "Create layout"
+placement = "popup"
+width = 80
+height = 24
+command = ["./target/release/herdr-layouts", "grid-dialog"]

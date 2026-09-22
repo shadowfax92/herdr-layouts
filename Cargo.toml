@@ -1,6 +1,6 @@
 [package]
 name = "herdr-layouts"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Tmux-style pane layout shortcuts for Herdr"
 license = "MIT"
@@ -10,6 +10,12 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+fs4 = "1"
+ratatui = "0.30.0"
+toml_edit = "0.24"
+
+[dev-dependencies]
+tempfile = "3.23"
 
 [lib]
 name = "herdr_layouts"
