@@ -151,12 +151,23 @@ impl GridController {
             .map(PathBuf::from)
             .context("HERDR_SOCKET_PATH is not set")?;
         let local_cwd = if pane["ssh"].is_object() {
-            Some(PathBuf::from(
+            // Only the temporary holding shell needs a local directory. The
+            // transport cwd is optional; never substitute the projected remote
+            // cwd when the server cannot supply it.
+            Some(
                 pane["ssh"]["local_cwd"]
                     .as_str()
                     .filter(|cwd| !cwd.is_empty())
-                    .context("SSH source pane has no local working directory")?,
-            ))
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .filter(|home| !home.is_empty())
+                            .map(PathBuf::from)
+                    })
+                    .context(
+                        "SSH source pane has no local working directory and HOME is not set",
+                    )?,
+            )
         } else {
             None
         };
@@ -261,11 +272,26 @@ impl GridController {
             .map(|pane| Some(pane.pane_id.clone()))
             .collect::<Vec<_>>();
         if let Some((tab, root)) = holding {
-            let mut remote_shells = Vec::new();
-            if self.local_cwd.is_some() {
+            let mut source_shells = Vec::new();
+            let mut stage_source_shells = self.local_cwd.is_some();
+            if !stage_source_shells && ids.len() < count {
+                // Layout entries contain geometry, not PaneInfo metadata. Read
+                // peers before moving them: a local source can share its tab
+                // with an SSH anchor, whose splits would inherit the wrong host.
+                for pane in &snapshot.panes {
+                    if pane.pane_id != self.source {
+                        let response: Value = self.herdr.json(&["pane", "get", &pane.pane_id])?;
+                        if response["result"]["pane"]["ssh"].is_object() {
+                            stage_source_shells = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if stage_source_shells {
                 // Inheritance belongs to the split target, not its cwd. A
                 // mixed tab's grid anchor may be local or on another host.
-                // Split our captured SSH source, then move each new shell to
+                // Split our captured source, then move each new shell to
                 // the local holding tab immediately, restoring source geometry
                 // before the next split. Final placement moves these identities.
                 let cwd = self.cwd.to_str().context("Source cwd is not UTF-8")?;
@@ -288,9 +314,9 @@ impl GridController {
                             !id.is_empty()
                                 && *id != root
                                 && !ids.iter().flatten().any(|existing| existing == id)
-                                && !remote_shells.iter().any(|existing| existing == id)
+                                && !source_shells.iter().any(|existing| existing == id)
                         })
-                        .context("Herdr returned an invalid SSH shell ID")?;
+                        .context("Herdr returned an invalid source shell ID")?;
                     let response: Value = self.herdr.json(&[
                         "pane",
                         "move",
@@ -309,9 +335,9 @@ impl GridController {
                     if moved["changed"].as_bool() != Some(true)
                         || moved["pane"]["pane_id"].as_str() != Some(new_id)
                     {
-                        bail!("Herdr did not stage SSH shell {new_id} with its original identity: {moved}");
+                        bail!("Herdr did not stage source shell {new_id} with its original identity: {moved}");
                     }
-                    remote_shells.push(new_id.to_owned());
+                    source_shells.push(new_id.to_owned());
                 }
             }
             let mut staged = vec![Some(root.to_owned())];
@@ -324,7 +350,7 @@ impl GridController {
                 tab,
                 &snapshot.workspace_id,
             )?;
-            ids.extend(remote_shells.into_iter().map(Some));
+            ids.extend(source_shells.into_iter().map(Some));
         }
         ids.resize(count, None);
         self.fill(

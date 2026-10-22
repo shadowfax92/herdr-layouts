@@ -109,6 +109,50 @@ fn ssh_grid_uses_remote_split_paths_and_a_local_holding_tab() {
 }
 
 #[test]
+fn ssh_grid_without_local_cwd_uses_home_only_for_the_holding_tab() {
+    for local_cwd in [Some(Value::Null), None] {
+        let runtime = Runtime::new(2);
+        let mut pane = json!({"pane_id":"w1:p1", "cwd":"/__remote__/project",
+            "ssh":{"host":"studio", "state":"live", "link_id":"link"}});
+        if let Some(cwd) = local_cwd {
+            pane["ssh"]["local_cwd"] = cwd;
+        }
+        runtime.update("source_pane", pane);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-layouts"))
+            .args(["grid", "3x1", "--pane", "w1:p1"])
+            .env("HERDR_BIN_PATH", runtime.directory.path().join("herdr"))
+            .env(
+                "HERDR_SOCKET_PATH",
+                runtime.directory.path().join("test.sock"),
+            )
+            .env("HOME", runtime.directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result = runtime.state();
+        let log: Vec<_> = result["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(log.iter().any(|cmd| cmd.starts_with("tab create")
+            && cmd.contains(&format!(
+                "--cwd {} --label",
+                runtime.directory.path().display()
+            ))));
+        assert!(log
+            .iter()
+            .filter(|cmd| cmd.starts_with("pane split"))
+            .all(|cmd| cmd.contains("--cwd /__remote__/project --no-focus")));
+    }
+}
+
+#[test]
 fn local_grid_still_checks_the_source_directory_before_mutating() {
     let runtime = Runtime::new(2);
     runtime.update(
@@ -169,6 +213,50 @@ fn mixed_grids_create_new_shells_on_the_captured_source_host() {
         );
         assert_eq!(result["ssh_hosts"]["w1:p1"], json!(other_host));
     }
+}
+
+#[test]
+fn mixed_grids_keep_new_shells_local_when_the_source_is_local() {
+    let runtime = Runtime::new(2);
+    runtime.update(
+        "source_pane",
+        json!({"pane_id":"w1:p2", "cwd":runtime.directory.path()}),
+    );
+    runtime.update("ssh_hosts", json!({"w1:p1":"studio", "w1:p2":null}));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-layouts"))
+        .args(["grid", "2x2", "--pane", "w1:p2"])
+        .env("HERDR_BIN_PATH", runtime.directory.path().join("herdr"))
+        .env(
+            "HERDR_SOCKET_PATH",
+            runtime.directory.path().join("test.sock"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = runtime.state();
+    assert_eq!(result["splits"], 2);
+    for n in 1..=2 {
+        assert!(
+            result["ssh_hosts"][format!("w1:new{n}")].is_null(),
+            "{result}"
+        );
+    }
+    assert_eq!(result["ssh_hosts"]["w1:p1"], "studio");
+    assert_eq!(
+        result["tabs"]["w1:t1"]["panes"].as_array().unwrap().len(),
+        4
+    );
+    assert!(result["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|cmd| cmd.starts_with("pane split"))
+        .all(|cmd| cmd.starts_with("pane split w1:p2 ")));
 }
 
 #[test]
