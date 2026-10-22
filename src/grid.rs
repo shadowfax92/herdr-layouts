@@ -114,6 +114,9 @@ pub struct GridController {
     herdr: Herdr,
     source: String,
     cwd: PathBuf,
+    // SSH panes project a remote cwd. The holding tab is explicitly local, so
+    // it uses the unprojected cwd while splits keep passing the remote path.
+    local_cwd: Option<PathBuf>,
     lock_path: PathBuf,
 }
 
@@ -123,6 +126,7 @@ impl GridController {
             herdr,
             source,
             cwd,
+            local_cwd: None,
             lock_path,
         }
     }
@@ -146,12 +150,24 @@ impl GridController {
         let socket = std::env::var_os("HERDR_SOCKET_PATH")
             .map(PathBuf::from)
             .context("HERDR_SOCKET_PATH is not set")?;
-        Ok(Self::new(
+        let local_cwd = if pane["ssh"].is_object() {
+            Some(PathBuf::from(
+                pane["ssh"]["local_cwd"]
+                    .as_str()
+                    .filter(|cwd| !cwd.is_empty())
+                    .context("SSH source pane has no local working directory")?,
+            ))
+        } else {
+            None
+        };
+        let mut controller = Self::new(
             herdr,
             source,
             PathBuf::from(cwd),
             socket.with_extension("layouts.lock"),
-        ))
+        );
+        controller.local_cwd = local_cwd;
+        Ok(controller)
     }
 
     pub fn capture(&self) -> Result<Snapshot> {
@@ -178,8 +194,13 @@ impl GridController {
             return Ok(ApplyOutcome::Refresh(current));
         }
         let created = size.validate(&current)?;
-        fs::metadata(&self.cwd)
-            .with_context(|| format!("Source directory {} is unavailable", self.cwd.display()))?;
+        // Never stat a projected remote path: it need not exist locally, and a
+        // matching laptop directory would refer to a different filesystem.
+        if self.local_cwd.is_none() {
+            fs::metadata(&self.cwd).with_context(|| {
+                format!("Source directory {} is unavailable", self.cwd.display())
+            })?;
+        }
         if current.zoomed {
             self.herdr
                 .output(&["pane", "zoom", "--pane", &self.source, "--off"])?;
@@ -200,7 +221,12 @@ impl GridController {
                 std::process::id(),
                 SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
             );
-            let cwd = self.cwd.to_str().context("Source cwd is not UTF-8")?;
+            let cwd = self
+                .local_cwd
+                .as_deref()
+                .unwrap_or(&self.cwd)
+                .to_str()
+                .context("Source cwd is not UTF-8")?;
             let response: Value = self.herdr.json(&[
                 "tab", "create", "--workspace", &current.workspace_id, "--cwd", cwd,
                 "--label", &label, "--no-focus",

@@ -56,6 +56,85 @@ fn snapshot(count: usize) -> Snapshot {
 }
 
 #[test]
+fn ssh_grid_uses_remote_split_paths_and_a_local_holding_tab() {
+    for before in [1, 2] {
+        for state in ["live", "stale"] {
+            let runtime = Runtime::new(before);
+            let cwd = "/__herdr_remote_only__/project";
+            runtime.update(
+                "source_pane",
+                json!({"pane_id":"w1:p1", "cwd":cwd,
+                "ssh":{"host":"studio", "link_id":"link-1", "state":state,
+                    "local_cwd":runtime.directory.path()}}),
+            );
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-layouts"))
+                .args(["grid", "3x1", "--pane", "w1:p1"])
+                .env("HERDR_BIN_PATH", runtime.directory.path().join("herdr"))
+                .env(
+                    "HERDR_SOCKET_PATH",
+                    runtime.directory.path().join("test.sock"),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result = runtime.state();
+            let log = result["log"].as_array().unwrap();
+            assert!(log
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|cmd| cmd.starts_with("pane split"))
+                .all(|cmd| cmd.contains(&format!("--cwd {cwd} --no-focus"))));
+            assert_eq!(result["splits"], 3 - before);
+            if before > 1 {
+                let holding = log
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .find(|cmd| cmd.starts_with("tab create"))
+                    .unwrap();
+                assert!(
+                    holding.contains(&format!(
+                        "--cwd {} --label",
+                        runtime.directory.path().display()
+                    )),
+                    "{holding}"
+                );
+                assert!(!holding.contains(cwd));
+            }
+        }
+    }
+}
+
+#[test]
+fn local_grid_still_checks_the_source_directory_before_mutating() {
+    let runtime = Runtime::new(2);
+    runtime.update(
+        "source_pane",
+        json!({"pane_id":"w1:p1", "cwd":"/__herdr_remote_only__/project"}),
+    );
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-layouts"))
+        .args(["grid", "3x1", "--pane", "w1:p1"])
+        .env("HERDR_BIN_PATH", runtime.directory.path().join("herdr"))
+        .env(
+            "HERDR_SOCKET_PATH",
+            runtime.directory.path().join("test.sock"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Source directory"));
+    assert!(runtime.state()["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .all(|cmd| cmd.starts_with("pane get") || cmd.starts_with("pane layout")));
+}
+
+#[test]
 fn exact_grids_preserve_order_and_create_only_missing_shells() {
     for (before, spec) in [
         (1, "5x2"),

@@ -90,7 +90,9 @@ def reply(value, code=0):
 if state.get("fail") and command.startswith(state["fail"]):
     reply("simulated CLI failure", 9)
 
-if args[:2] == ["pane", "layout"]:
+if args[:2] == ["pane", "get"]:
+    reply({"pane": state["source_pane"]})
+elif args[:2] == ["pane", "layout"]:
     pane = option("--pane")
     reply({"layout": state["tabs"][locate(pane)]})
 elif args[:2] == ["tab", "get"]:
