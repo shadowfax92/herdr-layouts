@@ -114,6 +114,9 @@ pub struct GridController {
     herdr: Herdr,
     source: String,
     cwd: PathBuf,
+    // SSH panes project a remote cwd. The holding tab is explicitly local, so
+    // it uses the unprojected cwd while splits keep passing the remote path.
+    local_cwd: Option<PathBuf>,
     lock_path: PathBuf,
 }
 
@@ -123,6 +126,7 @@ impl GridController {
             herdr,
             source,
             cwd,
+            local_cwd: None,
             lock_path,
         }
     }
@@ -146,12 +150,24 @@ impl GridController {
         let socket = std::env::var_os("HERDR_SOCKET_PATH")
             .map(PathBuf::from)
             .context("HERDR_SOCKET_PATH is not set")?;
-        Ok(Self::new(
+        let local_cwd = if pane["ssh"].is_object() {
+            Some(PathBuf::from(
+                pane["ssh"]["local_cwd"]
+                    .as_str()
+                    .filter(|cwd| !cwd.is_empty())
+                    .context("SSH source pane has no local working directory")?,
+            ))
+        } else {
+            None
+        };
+        let mut controller = Self::new(
             herdr,
             source,
             PathBuf::from(cwd),
             socket.with_extension("layouts.lock"),
-        ))
+        );
+        controller.local_cwd = local_cwd;
+        Ok(controller)
     }
 
     pub fn capture(&self) -> Result<Snapshot> {
@@ -178,8 +194,13 @@ impl GridController {
             return Ok(ApplyOutcome::Refresh(current));
         }
         let created = size.validate(&current)?;
-        fs::metadata(&self.cwd)
-            .with_context(|| format!("Source directory {} is unavailable", self.cwd.display()))?;
+        // Never stat a projected remote path: it need not exist locally, and a
+        // matching laptop directory would refer to a different filesystem.
+        if self.local_cwd.is_none() {
+            fs::metadata(&self.cwd).with_context(|| {
+                format!("Source directory {} is unavailable", self.cwd.display())
+            })?;
+        }
         if current.zoomed {
             self.herdr
                 .output(&["pane", "zoom", "--pane", &self.source, "--off"])?;
@@ -200,7 +221,12 @@ impl GridController {
                 std::process::id(),
                 SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
             );
-            let cwd = self.cwd.to_str().context("Source cwd is not UTF-8")?;
+            let cwd = self
+                .local_cwd
+                .as_deref()
+                .unwrap_or(&self.cwd)
+                .to_str()
+                .context("Source cwd is not UTF-8")?;
             let response: Value = self.herdr.json(&[
                 "tab", "create", "--workspace", &current.workspace_id, "--cwd", cwd,
                 "--label", &label, "--no-focus",
@@ -235,6 +261,59 @@ impl GridController {
             .map(|pane| Some(pane.pane_id.clone()))
             .collect::<Vec<_>>();
         if let Some((tab, root)) = holding {
+            let mut remote_shells = Vec::new();
+            if self.local_cwd.is_some() {
+                // Inheritance belongs to the split target, not its cwd. A
+                // mixed tab's grid anchor may be local or on another host.
+                // Split our captured SSH source, then move each new shell to
+                // the local holding tab immediately, restoring source geometry
+                // before the next split. Final placement moves these identities.
+                let cwd = self.cwd.to_str().context("Source cwd is not UTF-8")?;
+                for _ in ids.len()..count {
+                    let response: Value = self.herdr.json(&[
+                        "pane",
+                        "split",
+                        &self.source,
+                        "--direction",
+                        "right",
+                        "--ratio",
+                        "0.5",
+                        "--cwd",
+                        cwd,
+                        "--no-focus",
+                    ])?;
+                    let new_id = response["result"]["pane"]["pane_id"]
+                        .as_str()
+                        .filter(|id| {
+                            !id.is_empty()
+                                && *id != root
+                                && !ids.iter().flatten().any(|existing| existing == id)
+                                && !remote_shells.iter().any(|existing| existing == id)
+                        })
+                        .context("Herdr returned an invalid SSH shell ID")?;
+                    let response: Value = self.herdr.json(&[
+                        "pane",
+                        "move",
+                        new_id,
+                        "--tab",
+                        tab,
+                        "--target-pane",
+                        root,
+                        "--split",
+                        "right",
+                        "--ratio",
+                        "0.5",
+                        "--no-focus",
+                    ])?;
+                    let moved = &response["result"]["move_result"];
+                    if moved["changed"].as_bool() != Some(true)
+                        || moved["pane"]["pane_id"].as_str() != Some(new_id)
+                    {
+                        bail!("Herdr did not stage SSH shell {new_id} with its original identity: {moved}");
+                    }
+                    remote_shells.push(new_id.to_owned());
+                }
+            }
             let mut staged = vec![Some(root.to_owned())];
             staged.extend(ids.iter().skip(1).cloned());
             let tree = SplitTree::grid(0, staged.len(), 1);
@@ -245,6 +324,7 @@ impl GridController {
                 tab,
                 &snapshot.workspace_id,
             )?;
+            ids.extend(remote_shells.into_iter().map(Some));
         }
         ids.resize(count, None);
         self.fill(

@@ -21,6 +21,11 @@ Herdr Layouts creates exact grids and provides three useful tmux pane commands:
 
 Equalization follows tmux's `select-layout -E` behavior. It equalizes the contiguous row or column nearest the focused pane while preserving perpendicular splits.
 
+For SSH panes reported by the Herdr fork, grids pass the remote cwd back to
+Herdr for inherited SSH splits without checking that path on the laptop. A
+temporary holding tab uses the source's local cwd. Local panes retain the
+existing directory check and split behavior.
+
 ## Install
 
 Requires macOS or Linux (including WSL), Herdr 0.9.0 or newer, and a Rust toolchain.

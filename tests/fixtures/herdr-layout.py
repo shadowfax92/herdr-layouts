@@ -90,7 +90,9 @@ def reply(value, code=0):
 if state.get("fail") and command.startswith(state["fail"]):
     reply("simulated CLI failure", 9)
 
-if args[:2] == ["pane", "layout"]:
+if args[:2] == ["pane", "get"]:
+    reply({"pane": state["source_pane"]})
+elif args[:2] == ["pane", "layout"]:
     pane = option("--pane")
     reply({"layout": state["tabs"][locate(pane)]})
 elif args[:2] == ["tab", "get"]:
@@ -123,6 +125,8 @@ elif args[:2] == ["pane", "split"]:
     state["splits"] = state.get("splits", 0) + 1
     pane = f'w1:new{state["splits"]}'
     target = args[2]
+    if "ssh_hosts" in state:
+        state["ssh_hosts"][pane] = state["ssh_hosts"].get(target)
     tab = locate(target)
     state["trees"][tab] = insert(state["trees"][tab], target, pane,
                                  option("--direction"), float(option("--ratio")))
