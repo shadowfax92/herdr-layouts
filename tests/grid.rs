@@ -135,6 +135,83 @@ fn local_grid_still_checks_the_source_directory_before_mutating() {
 }
 
 #[test]
+fn mixed_grids_create_new_shells_on_the_captured_source_host() {
+    for other_host in [None, Some("other-host")] {
+        let runtime = Runtime::new(2);
+        runtime.update("source_pane", json!({"pane_id":"w1:p2", "cwd":"/__herdr_remote_only__/project",
+            "ssh":{"host":"studio","link_id":"link-1","state":"live", "local_cwd":runtime.directory.path()}}));
+        runtime.update("ssh_hosts", json!({"w1:p1":other_host, "w1:p2":"studio"}));
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-layouts"))
+            .args(["grid", "3x2", "--pane", "w1:p2"])
+            .env("HERDR_BIN_PATH", runtime.directory.path().join("herdr"))
+            .env(
+                "HERDR_SOCKET_PATH",
+                runtime.directory.path().join("test.sock"),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result = runtime.state();
+        for n in 1..=4 {
+            assert_eq!(
+                result["ssh_hosts"][format!("w1:new{n}")],
+                "studio",
+                "{result}"
+            );
+        }
+        assert_eq!(
+            result["tabs"]["w1:t1"]["panes"].as_array().unwrap().len(),
+            6
+        );
+        assert_eq!(result["ssh_hosts"]["w1:p1"], json!(other_host));
+    }
+}
+
+#[test]
+fn failed_ssh_shell_staging_retains_original_panes_and_recovery_tab() {
+    for (key, value) in [
+        ("fail", json!("pane split")),
+        ("reject_move", json!(1)),
+        ("malformed_move", json!(1)),
+    ] {
+        let runtime = Runtime::new(2);
+        runtime.update("source_pane", json!({"pane_id":"w1:p2", "cwd":"/__herdr_remote_only__/project",
+            "ssh":{"host":"studio","link_id":"link-1","state":"live", "local_cwd":runtime.directory.path()}}));
+        runtime.update(key, value);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-layouts"))
+            .args(["grid", "3x1", "--pane", "w1:p2"])
+            .env("HERDR_BIN_PATH", runtime.directory.path().join("herdr"))
+            .env(
+                "HERDR_SOCKET_PATH",
+                runtime.directory.path().join("test.sock"),
+            )
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Holding w1:holding"));
+        let result = runtime.state();
+        let ids: Vec<_> = result["tabs"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|tab| tab["panes"].as_array().unwrap())
+            .map(|pane| pane["pane_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"w1:p1") && ids.contains(&"w1:p2"));
+        assert!(result["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .all(|cmd| !cmd.starts_with("pane close")));
+    }
+}
+
+#[test]
 fn exact_grids_preserve_order_and_create_only_missing_shells() {
     for (before, spec) in [
         (1, "5x2"),

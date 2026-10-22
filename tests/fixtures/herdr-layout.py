@@ -125,6 +125,8 @@ elif args[:2] == ["pane", "split"]:
     state["splits"] = state.get("splits", 0) + 1
     pane = f'w1:new{state["splits"]}'
     target = args[2]
+    if "ssh_hosts" in state:
+        state["ssh_hosts"][pane] = state["ssh_hosts"].get(target)
     tab = locate(target)
     state["trees"][tab] = insert(state["trees"][tab], target, pane,
                                  option("--direction"), float(option("--ratio")))

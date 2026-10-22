@@ -261,6 +261,59 @@ impl GridController {
             .map(|pane| Some(pane.pane_id.clone()))
             .collect::<Vec<_>>();
         if let Some((tab, root)) = holding {
+            let mut remote_shells = Vec::new();
+            if self.local_cwd.is_some() {
+                // Inheritance belongs to the split target, not its cwd. A
+                // mixed tab's grid anchor may be local or on another host.
+                // Split our captured SSH source, then move each new shell to
+                // the local holding tab immediately, restoring source geometry
+                // before the next split. Final placement moves these identities.
+                let cwd = self.cwd.to_str().context("Source cwd is not UTF-8")?;
+                for _ in ids.len()..count {
+                    let response: Value = self.herdr.json(&[
+                        "pane",
+                        "split",
+                        &self.source,
+                        "--direction",
+                        "right",
+                        "--ratio",
+                        "0.5",
+                        "--cwd",
+                        cwd,
+                        "--no-focus",
+                    ])?;
+                    let new_id = response["result"]["pane"]["pane_id"]
+                        .as_str()
+                        .filter(|id| {
+                            !id.is_empty()
+                                && *id != root
+                                && !ids.iter().flatten().any(|existing| existing == id)
+                                && !remote_shells.iter().any(|existing| existing == id)
+                        })
+                        .context("Herdr returned an invalid SSH shell ID")?;
+                    let response: Value = self.herdr.json(&[
+                        "pane",
+                        "move",
+                        new_id,
+                        "--tab",
+                        tab,
+                        "--target-pane",
+                        root,
+                        "--split",
+                        "right",
+                        "--ratio",
+                        "0.5",
+                        "--no-focus",
+                    ])?;
+                    let moved = &response["result"]["move_result"];
+                    if moved["changed"].as_bool() != Some(true)
+                        || moved["pane"]["pane_id"].as_str() != Some(new_id)
+                    {
+                        bail!("Herdr did not stage SSH shell {new_id} with its original identity: {moved}");
+                    }
+                    remote_shells.push(new_id.to_owned());
+                }
+            }
             let mut staged = vec![Some(root.to_owned())];
             staged.extend(ids.iter().skip(1).cloned());
             let tree = SplitTree::grid(0, staged.len(), 1);
@@ -271,6 +324,7 @@ impl GridController {
                 tab,
                 &snapshot.workspace_id,
             )?;
+            ids.extend(remote_shells.into_iter().map(Some));
         }
         ids.resize(count, None);
         self.fill(
