@@ -91,7 +91,13 @@ if state.get("fail") and command.startswith(state["fail"]):
     reply("simulated CLI failure", 9)
 
 if args[:2] == ["pane", "get"]:
-    reply({"pane": state["source_pane"]})
+    pane = state.get("source_pane", {})
+    if pane.get("pane_id") != args[2]:
+        pane = {"pane_id": args[2]}
+        host = state.get("ssh_hosts", {}).get(args[2])
+        if host:
+            pane["ssh"] = {"host": host, "state": "live"}
+    reply({"pane": pane})
 elif args[:2] == ["pane", "layout"]:
     pane = option("--pane")
     reply({"layout": state["tabs"][locate(pane)]})
